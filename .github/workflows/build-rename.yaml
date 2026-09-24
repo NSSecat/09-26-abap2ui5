@@ -1,35 +1,25 @@
 name: build-rename
 
 # Renames all artifacts to a chosen namespace and pushes the result to
-# the branch rename_<name>, e.g. rename_zmyui5 — ready to pull with
-# abapGit for a parallel installation in the same SAP system (see
-# https://abap2ui5.github.io/docs/advanced/renaming.html). The renaming
-# itself is the plain abaplint rename with the checked-in config
-# .github/abaplint/rename.jsonc; this workflow only sets the chosen name
-# in the config (placeholder "znamespace") and stores the result.
+# the branch rename_<name>, e.g. rename_sct_qp — ready to pull with
+# abapGit for a parallel installation in the same SAP system.
 #
-# The input may be entered as:
-#   SCT
-#   #SCT#
+# Input format:
+#   #SCT#QP
+#   #SCT#CL
 #
-# If #SCT# is entered, the surrounding # characters are removed before
-# validation. The generated branch is rename_sct in both cases.
-#
-# Re-running with the same name updates the branch to the current main
-# state; without content changes nothing is pushed. The main commit is
-# carried as second parent so GitHub shows the branch as "ahead" instead
-# of "behind" main.
+# The branch name is generated from the two parts:
+#   #SCT#QP -> rename_sct_qp
 
 on:
   workflow_dispatch:
     inputs:
       namespace:
-        description: "New namespace, e.g. ZMYUI5 or #SCT# (max. 10 characters without #)"
+        description: "ABAP namespace in SAP format, e.g. #SCT#QP"
         required: true
         type: string
-        default: SCT
+        default: "#SCT#QP"
 
-# Read at the workflow level, write on the one job that pushes the branch.
 permissions:
   contents: read
 
@@ -49,48 +39,52 @@ jobs:
       NAMESPACE: ${{ inputs.namespace }}
 
     steps:
-      # Validate the input and derive the branch name.
-      - name: Derive branch name
+      - name: Derive namespace and branch name
         shell: bash
         run: |
           set -e
 
-          # Accept both:
-          #   SCT
-          #   #SCT#
-          #
-          # For the second form, remove the surrounding # characters.
-          namespace="$NAMESPACE"
+          raw="$NAMESPACE"
 
-          if [[ "$namespace" == \#*\# ]]; then
-            namespace="${namespace#\#}"
-            namespace="${namespace%\#}"
-          fi
-
-          # The actual namespace may contain:
-          # - a letter as the first character
-          # - letters, digits or underscores afterwards
-          # - a maximum of 10 characters in total
-          if ! printf '%s' "$namespace" | grep -Eq '^[A-Za-z][A-Za-z0-9_]{0,9}$'; then
-            echo "::error::Invalid namespace '$NAMESPACE'. Use letters/digits/underscore, max. 10 characters, optionally surrounded by #"
+          # Accept full SAP namespace format:
+          # #SCT#QP or #SCT#CL
+          if [[ ! "$raw" =~ ^#[A-Za-z][A-Za-z0-9_]*#[A-Za-z][A-Za-z0-9_]*$ ]]; then
+            echo "::error::Invalid namespace '$NAMESPACE'. Expected format #SCT#QP"
             exit 1
           fi
 
-          # Always use lowercase internally.
-          ns=$(printf '%s' "$namespace" | tr '[:upper:]' '[:lower:]')
+          # Split "#SCT#QP" into:
+          # first = SCT
+          # second = QP
+          first="${raw#\#}"
+          first="${first%%\#*}"
+          second="${raw##*\#}"
 
-          # Do not rename the original namespace.
-          if [ "$ns" = "z2ui5" ]; then
-            echo "::error::Namespace '$NAMESPACE' is the original namespace - nothing to rename"
+          if ! printf '%s' "$first" | grep -Eq '^[A-Za-z][A-Za-z0-9_]{0,9}$'; then
+            echo "::error::Invalid first namespace part '$first'"
             exit 1
           fi
 
-          echo "NS=$ns" >> "$GITHUB_ENV"
-          echo "BRANCH=rename_$ns" >> "$GITHUB_ENV"
+          if ! printf '%s' "$second" | grep -Eq '^[A-Za-z][A-Za-z0-9_]{0,9}$'; then
+            echo "::error::Invalid second namespace part '$second'"
+            exit 1
+          fi
+
+          ns_first=$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')
+          ns_second=$(printf '%s' "$second" | tr '[:upper:]' '[:lower:]')
+
+          # This is the actual ABAP namespace value used in the source tree.
+          rename_namespace="#${ns_first}#${ns_second}"
+
+          # Git branch names cannot contain #.
+          branch_name="rename_${ns_first}_${ns_second}"
+
+          echo "RENAME_NAMESPACE=$rename_namespace" >> "$GITHUB_ENV"
+          echo "BRANCH=$branch_name" >> "$GITHUB_ENV"
 
           echo "Input namespace: $NAMESPACE"
-          echo "Normalized namespace: $ns"
-          echo "Building branch: rename_$ns"
+          echo "ABAP namespace: $rename_namespace"
+          echo "Branch: $branch_name"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -98,49 +92,53 @@ jobs:
         with:
           npm-ci: "true"
 
-      # Set the chosen name in the rename config and run abaplint.
-      # It writes the renamed sources to:
-      # .github/abaplint/output/<workspace path>/src
+      # Set the chosen namespace in the rename config and run the abaplint rename.
       - name: Rename to ${{ inputs.namespace }}
         shell: bash
         run: |
           set -e
 
-          sed "s/znamespace/$NS/g" \
+          # Example:
+          # znamespace -> #sct#qp
+          sed "s/znamespace/$RENAME_NAMESPACE/g" \
             .github/abaplint/rename.jsonc \
             > .github/abaplint/rename_run.jsonc
 
           npx abaplint .github/abaplint/rename_run.jsonc --rename
 
-      # Branch content: renamed src tree plus the abapGit descriptor
-      # and the license.
       - name: Assemble branch content
         shell: bash
         run: |
           set -e
 
           src=$(find .github/abaplint/output -type d -name src | head -n 1)
-
           if [ -z "$src" ]; then
-            echo "::error::No renamed src folder found under .github/abaplint/output"
+            echo "::error::no renamed src folder found under .github/abaplint/output"
             exit 1
           fi
 
           out=".github/out/$BRANCH"
-
           rm -rf "$out"
           mkdir -p "$out"
 
           cp -r "$src" "$out/src"
           cp LICENSE "$out/"
 
-          ns_upper=$(printf '%s' "$NS" | tr '[:lower:]' '[:upper:]')
+          # Replace the interface name in .abapgit.xml
+          # ABAP uses upper-case for the first segment, e.g. Z2UI5_IF_APP
+          ns_upper_first=$(printf '%s' "${RENAME_NAMESPACE#\#}" | cut -d'#' -f1 | tr '[:lower:]' '[:upper:]')
+          ns_upper_second=$(printf '%s' "${RENAME_NAMESPACE##*\#}" | tr '[:lower:]' '[:upper:]')
 
-          sed "s/Z2UI5_IF_APP/${ns_upper}_IF_APP/" \
+          # If your interface name is built like:
+          # Z2UI5_IF_APP
+          # then some systems expect:
+          # SCT_IF_APP or QP_IF_APP depending on your template.
+          #
+          # If your rename config expects a different pattern, adjust this line below.
+          sed "s/Z2UI5_IF_APP/${ns_upper_first}_${ns_upper_second}_IF_APP/" \
             .abapgit.xml \
             > "$out/.abapgit.xml"
 
-      # Push the renamed branch.
       - name: Push renamed branch
         shell: bash
         run: |
@@ -152,7 +150,6 @@ jobs:
           git config user.email 'github-actions[bot]@users.noreply.github.com'
 
           git fetch origin "$b" --depth 1 2>/dev/null || true
-
           parent=$(git rev-parse -q --verify "refs/remotes/origin/$b" || true)
 
           index="$RUNNER_TEMP/index-$b"
@@ -163,11 +160,6 @@ jobs:
             GIT_DIR="$GITHUB_WORKSPACE/.git"
             GIT_WORK_TREE=.
             GIT_INDEX_FILE="$index"
-
-            export GIT_DIR
-            export GIT_WORK_TREE
-            export GIT_INDEX_FILE
-
             git add -A
           )
 
@@ -178,12 +170,7 @@ jobs:
             exit 0
           fi
 
-          commit=$(git commit-tree \
-            "$tree" \
-            ${parent:+-p "$parent"} \
-            -p "$GITHUB_SHA" \
-            -m "build: $b from $GITHUB_SHA")
-
+          commit=$(git commit-tree "$tree" ${parent:+-p "$parent"} -p "$GITHUB_SHA" -m "build: $b from $GITHUB_SHA")
           git push origin "$commit:refs/heads/$b"
 
           echo "$b: pushed $commit"
