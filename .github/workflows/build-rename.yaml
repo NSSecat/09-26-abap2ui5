@@ -43,11 +43,21 @@ jobs:
     # validate the input and derive the branch name before building
     - name: Derive branch name
       run: |
-        if ! printf '%s' "$NAMESPACE" | grep -Eq '^[A-Za-z][A-Za-z0-9_]{0,9}$'; then
-          echo "::error::Invalid namespace '$NAMESPACE' (letter + letters/digits/underscore, max. 10 characters)"
-          exit 1
-        fi
-        ns=$(printf '%s' "$NAMESPACE" | tr '[:upper:]' '[:lower:]')
+# Optionales SAP-Platzhalterformat akzeptieren:
+# #SCT# wird intern zu SCT
+namespace="$NAMESPACE"
+
+if [[ "$namespace" == \#*\# ]]; then
+  namespace="${namespace#\#}"
+  namespace="${namespace%\#}"
+fi
+
+if ! printf '%s' "$namespace" | grep -Eq '^[A-Za-z][A-Za-z0-9_]{0,9}$'; then
+  echo "::error::Invalid namespace '$NAMESPACE'. Use letters/digits/underscore, max. 10 characters, optionally surrounded by #"
+  exit 1
+fi
+
+ns=$(printf '%s' "$namespace" | tr '[:upper:]' '[:lower:]')
         if [ "$ns" = "z2ui5" ]; then
           echo "::error::Namespace '$NAMESPACE' is the original namespace - nothing to rename"
           exit 1
