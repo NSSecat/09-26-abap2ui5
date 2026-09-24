@@ -1,27 +1,5 @@
 name: build-rename
 
-# Renames all ABAP artifacts to a selectable SAP namespace.
-#
-# Supported inputs:
-#   #SCT#
-#   #SCT#AU5
-#   SCT
-#   SCT_AU5
-#
-# Example for input #SCT#AU5:
-#
-#   Technical name for abaplint:
-#     sct_au5
-#
-#   Name inside ABAP source code:
-#     /sct/au5
-#
-#   Name in GitHub filenames:
-#     #sct#au5
-#
-#   Generated branch:
-#     rename_sct_au5
-
 on:
   workflow_dispatch:
     inputs:
@@ -50,21 +28,18 @@ jobs:
       NAMESPACE: ${{ inputs.namespace }}
 
     steps:
-      # --------------------------------------------------------------------
-      # Derive the three required namespace formats:
+      # ---------------------------------------------------------------
+      # Build the different namespace representations.
       #
-      # TECH_NAMESPACE:
-      #   Used only while running abaplint.
-      #   Example: sct_au5
+      # Example input:
+      #   #SCT#AU5
       #
-      # SAP_NAMESPACE:
-      #   Used inside ABAP source code.
-      #   Example: /sct/au5
-      #
-      # GIT_NAMESPACE:
-      #   Used in GitHub filenames.
-      #   Example: #sct#au5
-      # --------------------------------------------------------------------
+      # Results:
+      #   TECH_NAMESPACE = sct_au5
+      #   SAP_NAMESPACE  = /sct/au5
+      #   GIT_NAMESPACE  = #sct#au5
+      #   BRANCH         = rename_sct_au5
+      # ---------------------------------------------------------------
       - name: Derive namespace and branch name
         shell: bash
         run: |
@@ -78,38 +53,34 @@ jobs:
           first=""
           second=""
 
-          # Supported format 1:
-          #   #SCT#
+          # Format: #SCT#
           if [[ "$raw" =~ ^#([A-Za-z][A-Za-z0-9_]*)#$ ]]; then
             first="${BASH_REMATCH[1]}"
 
-          # Supported format 2:
-          #   #SCT#AU5
+          # Format: #SCT#AU5
           elif [[ "$raw" =~ ^#([A-Za-z][A-Za-z0-9_]*)#([A-Za-z][A-Za-z0-9_]*)$ ]]; then
             first="${BASH_REMATCH[1]}"
             second="${BASH_REMATCH[2]}"
 
-          # Supported format 3:
-          #   SCT
+          # Format: SCT
           elif [[ "$raw" =~ ^([A-Za-z][A-Za-z0-9_]*)$ ]]; then
             first="${BASH_REMATCH[1]}"
 
-          # Supported format 4:
-          #   SCT_AU5
+          # Format: SCT_AU5
           elif [[ "$raw" =~ ^([A-Za-z][A-Za-z0-9_]*)_([A-Za-z][A-Za-z0-9_]*)$ ]]; then
             first="${BASH_REMATCH[1]}"
             second="${BASH_REMATCH[2]}"
 
           else
             echo "::error::Invalid namespace '$NAMESPACE'."
-            echo "::error::Expected #SCT#, #SCT#AU5, SCT or SCT_AU5."
+            echo "::error::Use #SCT#, #SCT#AU5, SCT or SCT_AU5."
             exit 1
           fi
 
           first_lower="$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')"
           second_lower="$(printf '%s' "$second" | tr '[:upper:]' '[:lower:]')"
 
-          # Validate each namespace component.
+          # Validate the namespace components.
           if ! printf '%s' "$first_lower" | grep -Eq '^[a-z][a-z0-9_]{0,9}$'; then
             echo "::error::Invalid first namespace component '$first'."
             exit 1
@@ -121,31 +92,66 @@ jobs:
             exit 1
           fi
 
-          # Technical name used by abaplint.
-          #
-          # #SCT#     -> sct
-          # #SCT#AU5  -> sct_au5
           if [ -n "$second_lower" ]; then
+            # Example:
+            #   #SCT#AU5
+            #
+            # Technical name:
+            #   sct_au5
+            #
+            # ABAP name:
+            #   /sct/au5
+            #
+            # Git filename:
+            #   #sct#au5
             tech_namespace="${first_lower}_${second_lower}"
             sap_namespace="/${first_lower}/${second_lower}"
             git_namespace="#${first_lower}#${second_lower}"
             branch_name="rename_${first_lower}_${second_lower}"
+
+            # The underscore belongs to the replacement prefix because
+            # the source object name follows after it:
+            #
+            # sct_au5_IF_APP -> /sct/au5_IF_APP
+            tech_prefix="${tech_namespace}_"
+            sap_prefix="${sap_namespace}_"
+            git_prefix="${git_namespace}_"
+
           else
+            # Example:
+            #   #SCT#
+            #
+            # Technical name:
+            #   sct
+            #
+            # ABAP name:
+            #   /sct/IF_APP
+            #
+            # Git filename:
+            #   #sct#IF_APP
             tech_namespace="${first_lower}"
             sap_namespace="/${first_lower}/"
-            git_namespace="#${first_lower}#"
+            git_namespace="#${first_lower}"
             branch_name="rename_${first_lower}"
+
+            # For a namespace without a second component, the slash at
+            # the end of /sct/ already separates the namespace from the
+            # object name. No additional underscore is added here.
+            #
+            # sct_IF_APP -> /sct/IF_APP
+            tech_prefix="${tech_namespace}_"
+            sap_prefix="${sap_namespace}"
+            git_prefix="${git_namespace}"
           fi
 
-          # Keep the technical namespace short enough for the configured
-          # ABAP object-name limit.
+          # Limit the technical replacement name.
           if [ "${#tech_namespace}" -gt 10 ]; then
             echo "::error::Namespace '$NAMESPACE' is too long."
-            echo "::error::The technical namespace '$tech_namespace' must not exceed 10 characters."
+            echo "::error::Technical namespace '$tech_namespace' exceeds 10 characters."
             exit 1
           fi
 
-          # Do not rename the original namespace.
+          # Prevent renaming to the original namespace.
           if [ "$tech_namespace" = "z2ui5" ]; then
             echo "::error::Namespace '$NAMESPACE' is the original namespace - nothing to rename."
             exit 1
@@ -154,6 +160,9 @@ jobs:
           echo "TECH_NAMESPACE=$tech_namespace" >> "$GITHUB_ENV"
           echo "SAP_NAMESPACE=$sap_namespace" >> "$GITHUB_ENV"
           echo "GIT_NAMESPACE=$git_namespace" >> "$GITHUB_ENV"
+          echo "TECH_PREFIX=$tech_prefix" >> "$GITHUB_ENV"
+          echo "SAP_PREFIX=$sap_prefix" >> "$GITHUB_ENV"
+          echo "GIT_PREFIX=$git_prefix" >> "$GITHUB_ENV"
           echo "BRANCH=$branch_name" >> "$GITHUB_ENV"
 
           echo "Input namespace:       $NAMESPACE"
@@ -168,13 +177,13 @@ jobs:
         with:
           npm-ci: "true"
 
-      # --------------------------------------------------------------------
-      # Run abaplint with a valid technical name.
+      # ---------------------------------------------------------------
+      # Run abaplint with a valid technical namespace.
       #
       # Important:
       #   abaplint receives sct or sct_au5.
-      #   It does NOT receive #sct# or /sct/.
-      # --------------------------------------------------------------------
+      #   It does not receive #sct# or /sct/.
+      # ---------------------------------------------------------------
       - name: Rename with abaplint
         shell: bash
         run: |
@@ -186,51 +195,36 @@ jobs:
 
           npx abaplint .github/abaplint/rename_run.jsonc --rename
 
-      # --------------------------------------------------------------------
-      # Convert the abaplint result:
+      # ---------------------------------------------------------------
+      # Convert the result after abaplint.
       #
-      # ABAP source:
-      #   sct_au5_IF_APP
-      #   -> /sct/au5_IF_APP
+      # Content:
+      #   sct_au5_IF_AJSON -> /sct/au5_IF_AJSON
       #
-      # GitHub filename:
-      #   sct_au5_IF_APP.clas.abap
-      #   -> #sct#au5_IF_APP.clas.abap
-      #
-      # The slash format is used only inside source files.
-      # The hash format is used only in filenames.
-      # --------------------------------------------------------------------
+      # Filename:
+      #   sct_au5_IF_AJSON.clas.abap
+      #   -> #sct#au5_IF_AJSON.clas.abap
+      # ---------------------------------------------------------------
       - name: Convert namespace in code and filenames
         shell: bash
         run: |
           set -euo pipefail
 
-          export TECH_NAMESPACE
-          export SAP_NAMESPACE
-          export GIT_NAMESPACE
+          export TECH_PREFIX
+          export SAP_PREFIX
+          export GIT_PREFIX
 
           python3 <<'PY'
           import os
           from pathlib import Path
 
-          tech = os.environ["TECH_NAMESPACE"]
-          sap = os.environ["SAP_NAMESPACE"]
-          git_namespace = os.environ["GIT_NAMESPACE"]
+          tech_prefix = os.environ["TECH_PREFIX"]
+          sap_prefix = os.environ["SAP_PREFIX"]
+          git_prefix = os.environ["GIT_PREFIX"]
 
           output = Path(".github/abaplint/output")
 
-          # The namespace is normally followed by an underscore:
-          #
-          #   sct_IF_APP
-          #   sct_au5_IF_APP
-          #
-          # Replace only the namespace prefix plus underscore.
-          # This prevents accidental replacements in unrelated words.
-          tech_prefix = tech + "_"
-          sap_prefix = sap
-          git_prefix = git_namespace
-
-          # Convert content of all generated text files.
+          # Replace namespace references inside generated text files.
           for path in sorted(
               output.rglob("*"),
               key=lambda item: len(item.parts),
@@ -253,10 +247,16 @@ jobs:
               except UnicodeDecodeError:
                   continue
 
-              # Lowercase result produced by the workflow.
+              # Lowercase technical names.
+              #
+              # sct_au5_IF_AJSON
+              # -> /sct/au5_IF_AJSON
               text = text.replace(tech_prefix, sap_prefix)
 
-              # Also handle uppercase names if abaplint emitted them.
+              # Uppercase technical names, if present.
+              #
+              # SCT_AU5_IF_AJSON
+              # -> /SCT/AU5_IF_AJSON
               text = text.replace(
                   tech_prefix.upper(),
                   sap_prefix.upper(),
@@ -265,10 +265,6 @@ jobs:
               path.write_text(text, encoding="utf-8")
 
           # Rename generated files.
-          #
-          # Example:
-          #   sct_au5_cl_xml_view.clas.abap
-          #   -> #sct#au5_cl_xml_view.clas.abap
           for path in sorted(
               output.rglob("*"),
               key=lambda item: len(item.parts),
@@ -278,9 +274,17 @@ jobs:
                   continue
 
               old_name = path.name
-              new_name = old_name.replace(tech_prefix, git_prefix)
 
-              # Also handle uppercase technical names.
+              # Lowercase filename prefix.
+              #
+              # sct_au5_IF_AJSON.clas.abap
+              # -> #sct#au5_IF_AJSON.clas.abap
+              new_name = old_name.replace(
+                  tech_prefix,
+                  git_prefix,
+              )
+
+              # Uppercase filename prefix.
               new_name = new_name.replace(
                   tech_prefix.upper(),
                   git_prefix,
@@ -290,9 +294,9 @@ jobs:
                   path.rename(path.with_name(new_name))
           PY
 
-      # --------------------------------------------------------------------
-      # Assemble branch content.
-      # --------------------------------------------------------------------
+      # ---------------------------------------------------------------
+      # Assemble the generated branch.
+      # ---------------------------------------------------------------
       - name: Assemble branch content
         shell: bash
         run: |
@@ -313,20 +317,20 @@ jobs:
           cp -r "$src" "$out/src"
           cp LICENSE "$out/"
 
-          # .abapgit.xml uses the SAP slash notation.
+          # The version constant must use the slash notation because
+          # this value is interpreted as ABAP code by abapGit.
           #
           # Example:
-          #   Z2UI5_IF_APP=>VERSION
-          #   -> /sct/au5_IF_APP=>VERSION
+          #   /sct/au5_IF_APP=>VERSION
           version_constant="${SAP_NAMESPACE}_IF_APP=>VERSION"
 
           sed "s#Z2UI5_IF_APP=&gt;VERSION#${version_constant}#" \
             .abapgit.xml \
             > "$out/.abapgit.xml"
 
-      # --------------------------------------------------------------------
+      # ---------------------------------------------------------------
       # Push the generated branch.
-      # --------------------------------------------------------------------
+      # ---------------------------------------------------------------
       - name: Push renamed branch
         shell: bash
         run: |
