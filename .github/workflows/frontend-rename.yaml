@@ -1,0 +1,548 @@
+name: frontend-rename
+
+# Independent frontend renaming workflow.
+#
+# Source directories:
+#   frontend/abap/standard
+#   frontend/abap/cloud
+#
+# The selected source directory is renamed and written to a new branch
+# containing only:
+#
+#   src/
+#   LICENSE
+#   .abapgit.xml
+#
+# Supported namespace inputs:
+#   #SCT#
+#   #SCT#AU5
+#   SCT
+#   SCT_AU5
+
+on:
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: "SAP namespace, e.g. #SCT# or #SCT#AU5"
+        required: true
+        type: string
+        default: "#SCT#"
+
+      edition:
+        description: "Select frontend edition"
+        required: true
+        type: choice
+        options:
+          - standard
+          - cloud
+        default: standard
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-rename-${{ inputs.namespace }}-${{ inputs.edition }}
+  cancel-in-progress: false
+
+jobs:
+  frontend_rename:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: write
+
+    env:
+      NAMESPACE: ${{ inputs.namespace }}
+      EDITION: ${{ inputs.edition }}
+
+    steps:
+      # ---------------------------------------------------------------
+      # Select the frontend source directory.
+      # ---------------------------------------------------------------
+      - name: Select frontend source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$EDITION" in
+            standard)
+              SOURCE_DIR="frontend/abap/standard"
+              ;;
+            cloud)
+              SOURCE_DIR="frontend/abap/cloud"
+              ;;
+            *)
+              echo "::error::Invalid edition '$EDITION'."
+              echo "::error::Allowed values are: standard, cloud."
+              exit 1
+              ;;
+          esac
+
+          echo "SOURCE_DIR=$SOURCE_DIR" >> "$GITHUB_ENV"
+
+          echo "Selected edition: $EDITION"
+          echo "Selected source:  $SOURCE_DIR"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup
+        with:
+          npm-ci: "true"
+
+      # ---------------------------------------------------------------
+      # Convert the input into the three required representations.
+      #
+      # Example:
+      #
+      # Input:
+      #   #SCT#AU5
+      #
+      # abaplint:
+      #   sct_au5
+      #
+      # ABAP code:
+      #   /sct/au5
+      #
+      # Git filename:
+      #   #sct#au5
+      #
+      # Branch:
+      #   frontend_rename_sct_au5_cloud
+      # ---------------------------------------------------------------
+      - name: Derive namespace and branch name
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          raw="$NAMESPACE"
+
+          # Remove leading and trailing whitespace.
+          raw="$(printf '%s' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+          first=""
+          second=""
+
+          # Format: #SCT#
+          if [[ "$raw" =~ ^#([A-Za-z][A-Za-z0-9_]*)#$ ]]; then
+            first="${BASH_REMATCH[1]}"
+
+          # Format: #SCT#AU5
+          elif [[ "$raw" =~ ^#([A-Za-z][A-Za-z0-9_]*)#([A-Za-z][A-Za-z0-9_]*)$ ]]; then
+            first="${BASH_REMATCH[1]}"
+            second="${BASH_REMATCH[2]}"
+
+          # Format: SCT
+          elif [[ "$raw" =~ ^([A-Za-z][A-Za-z0-9_]*)$ ]]; then
+            first="${BASH_REMATCH[1]}"
+
+          # Format: SCT_AU5
+          elif [[ "$raw" =~ ^([A-Za-z][A-Za-z0-9_]*)_([A-Za-z][A-Za-z0-9_]*)$ ]]; then
+            first="${BASH_REMATCH[1]}"
+            second="${BASH_REMATCH[2]}"
+
+          else
+            echo "::error::Invalid namespace '$NAMESPACE'."
+            echo "::error::Use #SCT#, #SCT#AU5, SCT or SCT_AU5."
+            exit 1
+          fi
+
+          first_lower="$(printf '%s' "$first" | tr '[:upper:]' '[:lower:]')"
+          second_lower="$(printf '%s' "$second" | tr '[:upper:]' '[:lower:]')"
+
+          if ! printf '%s' "$first_lower" | grep -Eq '^[a-z][a-z0-9_]{0,9}$'; then
+            echo "::error::Invalid first namespace component '$first'."
+            exit 1
+          fi
+
+          if [ -n "$second_lower" ] &&
+             ! printf '%s' "$second_lower" | grep -Eq '^[a-z][a-z0-9_]{0,9}$'; then
+            echo "::error::Invalid second namespace component '$second'."
+            exit 1
+          fi
+
+          if [ -n "$second_lower" ]; then
+            # #SCT#AU5
+            tech_namespace="${first_lower}_${second_lower}"
+            sap_namespace="/${first_lower}/${second_lower}"
+            git_namespace="#${first_lower}#${second_lower}"
+            branch_name="frontend_rename_${first_lower}_${second_lower}_${EDITION}"
+
+            # The underscore is part of the replacement prefix.
+            #
+            # sct_au5_IF_APP
+            # /sct/au5_IF_APP
+            # #sct#au5_IF_APP
+            tech_prefix="${tech_namespace}_"
+            sap_prefix="${sap_namespace}_"
+            git_prefix="${git_namespace}_"
+          else
+            # #SCT#
+            tech_namespace="${first_lower}"
+            sap_namespace="/${first_lower}/"
+            git_namespace="#${first_lower}"
+            branch_name="frontend_rename_${first_lower}_${EDITION}"
+
+            # /sct/ already ends with the separator.
+            #
+            # sct_IF_APP
+            # /sct/IF_APP
+            # #sct#IF_APP
+            tech_prefix="${tech_namespace}_"
+            sap_prefix="${sap_namespace}"
+            git_prefix="${git_namespace}"
+          fi
+
+          if [ "${#tech_namespace}" -gt 10 ]; then
+            echo "::error::Technical namespace '$tech_namespace' is longer than 10 characters."
+            exit 1
+          fi
+
+          if [ "$tech_namespace" = "z2ui5" ]; then
+            echo "::error::The original namespace z2ui5 cannot be used."
+            exit 1
+          fi
+
+          echo "TECH_NAMESPACE=$tech_namespace" >> "$GITHUB_ENV"
+          echo "SAP_NAMESPACE=$sap_namespace" >> "$GITHUB_ENV"
+          echo "GIT_NAMESPACE=$git_namespace" >> "$GITHUB_ENV"
+          echo "TECH_PREFIX=$tech_prefix" >> "$GITHUB_ENV"
+          echo "SAP_PREFIX=$sap_prefix" >> "$GITHUB_ENV"
+          echo "GIT_PREFIX=$git_prefix" >> "$GITHUB_ENV"
+          echo "BRANCH=$branch_name" >> "$GITHUB_ENV"
+
+          echo "Input namespace:        $NAMESPACE"
+          echo "Edition:                $EDITION"
+          echo "Technical namespace:    $tech_namespace"
+          echo "ABAP code namespace:    $sap_namespace"
+          echo "Git filename namespace: $git_namespace"
+          echo "Branch:                 $branch_name"
+
+      # ---------------------------------------------------------------
+      # Prepare the selected frontend source.
+      #
+      # The selected directory is copied to a temporary workspace:
+      #
+      #   frontend/abap/cloud
+      #   -> frontend-rename-work
+      #
+      # or:
+      #
+      #   frontend/abap/standard
+      #   -> frontend-rename-work
+      # ---------------------------------------------------------------
+      - name: Prepare selected frontend source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "$SOURCE_DIR" ]; then
+            echo "::error::Source directory '$SOURCE_DIR' does not exist."
+            exit 1
+          fi
+
+          rm -rf frontend-rename-work
+          mkdir -p frontend-rename-work
+
+          cp -a "$SOURCE_DIR"/. frontend-rename-work/
+
+          echo "Prepared frontend source:"
+          find frontend-rename-work -maxdepth 2 -type f | sort
+
+      # ---------------------------------------------------------------
+      # Create an independent abaplint rename configuration.
+      #
+      # The selected frontend configuration is not reused directly.
+      # This workflow creates its own rename configuration.
+      #
+      # abaplint receives only the technical name, for example:
+      #   sct
+      #   sct_au5
+      #
+      # It never receives #sct# or /sct/.
+      # ---------------------------------------------------------------
+      - name: Create frontend rename configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$EDITION" = "cloud" ]; then
+            ABAP_VERSION="Cloud"
+          else
+            ABAP_VERSION="v750"
+          fi
+
+          cat > frontend-rename.jsonc <<EOF
+          {
+            "global": {
+              "files": "/frontend-rename-work/**/*.*"
+            },
+            "rename": {
+              "output": "frontend-rename-output",
+              "patterns": [
+                {
+                  "type": "CLAS|INTF|TABL|DEVC",
+                  "oldName": "^z2ui5(.*)$",
+                  "newName": "${TECH_NAMESPACE}\$1"
+                }
+              ]
+            },
+            "syntax": {
+              "version": "${ABAP_VERSION}",
+              "errorNamespace": "."
+            },
+            "rules": {
+              "allowed_object_types": {
+                "allowed": [
+                  "CLAS",
+                  "DEVC",
+                  "INTF",
+                  "TABL"
+                ]
+              },
+              "begin_end_names": true,
+              "check_ddic": true,
+              "check_include": true,
+              "check_syntax": true,
+              "global_class": true,
+              "implement_methods": true,
+              "method_implemented_twice": true,
+              "parser_error": true,
+              "superclass_final": true,
+              "unknown_types": true,
+              "xml_consistency": true
+            }
+          }
+          EOF
+
+          echo "Generated frontend rename configuration:"
+          cat frontend-rename.jsonc
+
+      # ---------------------------------------------------------------
+      # Run the independent frontend rename.
+      # ---------------------------------------------------------------
+      - name: Rename selected frontend with abaplint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          npx abaplint frontend-rename.jsonc --rename
+
+      # ---------------------------------------------------------------
+      # Convert:
+      #
+      # Code:
+      #   sct_au5_IF_AJSON
+      #   -> /sct/au5_IF_AJSON
+      #
+      # Filename:
+      #   sct_au5_IF_AJSON.clas.abap
+      #   -> #sct#au5_IF_AJSON.clas.abap
+      # ---------------------------------------------------------------
+      - name: Convert namespace in frontend code and filenames
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export TECH_PREFIX
+          export SAP_PREFIX
+          export GIT_PREFIX
+
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          tech_prefix = os.environ["TECH_PREFIX"]
+          sap_prefix = os.environ["SAP_PREFIX"]
+          git_prefix = os.environ["GIT_PREFIX"]
+
+          output = Path("frontend-rename-output")
+
+          if not output.exists():
+              raise SystemExit("frontend-rename-output was not created")
+
+          # Replace namespace references inside text files.
+          for path in sorted(
+              output.rglob("*"),
+              key=lambda item: len(item.parts),
+              reverse=True,
+          ):
+              if not path.is_file():
+                  continue
+
+              try:
+                  data = path.read_bytes()
+              except OSError:
+                  continue
+
+              # Skip binary files.
+              if b"\x00" in data:
+                  continue
+
+              try:
+                  text = data.decode("utf-8")
+              except UnicodeDecodeError:
+                  continue
+
+              # Lowercase technical namespace.
+              text = text.replace(tech_prefix, sap_prefix)
+
+              # Uppercase technical namespace, if present.
+              text = text.replace(
+                  tech_prefix.upper(),
+                  sap_prefix.upper(),
+              )
+
+              path.write_text(text, encoding="utf-8")
+
+          # Rename generated filenames.
+          for path in sorted(
+              output.rglob("*"),
+              key=lambda item: len(item.parts),
+              reverse=True,
+          ):
+              if not path.exists() or not path.is_file():
+                  continue
+
+              old_name = path.name
+
+              # Lowercase filename namespace.
+              new_name = old_name.replace(
+                  tech_prefix,
+                  git_prefix,
+              )
+
+              # Uppercase filename namespace.
+              new_name = new_name.replace(
+                  tech_prefix.upper(),
+                  git_prefix,
+              )
+
+              if new_name != old_name:
+                  path.rename(path.with_name(new_name))
+          PY
+
+      # ---------------------------------------------------------------
+      # Find the renamed src directory and create the final branch tree.
+      #
+      # The output branch contains only:
+      #
+      #   src/
+      #   LICENSE
+      #   .abapgit.xml
+      # ---------------------------------------------------------------
+      - name: Assemble frontend branch content
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          src="$(find frontend-rename-output -type d -name src | head -n 1)"
+
+          if [ -z "$src" ]; then
+            echo "::error::No renamed src directory found."
+            echo "Generated output:"
+            find frontend-rename-output -maxdepth 5 -print || true
+            exit 1
+          fi
+
+          out=".github/out/$BRANCH"
+
+          rm -rf "$out"
+          mkdir -p "$out"
+
+          cp -r "$src" "$out/src"
+
+          if [ -f LICENSE ]; then
+            cp LICENSE "$out/LICENSE"
+          fi
+
+          # Create an .abapgit.xml for the selected frontend.
+          #
+          # The version constant uses SAP slash notation:
+          #   /sct/au5_IF_APP=>VERSION
+          #
+          # If the selected frontend uses another interface name,
+          # adjust Z2UI5_IF_APP here.
+          if [ -f .abapgit.xml ]; then
+            version_constant="${SAP_NAMESPACE}_IF_APP=>VERSION"
+
+            sed "s#Z2UI5_IF_APP=&gt;VERSION#${version_constant}#" \
+              .abapgit.xml \
+              > "$out/.abapgit.xml"
+          else
+            cat > "$out/.abapgit.xml" <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
+           <asx:values>
+            <DATA>
+             <MASTER_LANGUAGE>E</MASTER_LANGUAGE>
+             <STARTING_FOLDER>/src/</STARTING_FOLDER>
+             <FOLDER_LOGIC>PREFIX</FOLDER_LOGIC>
+             <VERSION_CONSTANT>${SAP_NAMESPACE}_IF_APP=&gt;VERSION</VERSION_CONSTANT>
+            </DATA>
+           </asx:values>
+          </asx:abap>
+          EOF
+          fi
+
+          echo "Final branch content:"
+          find "$out" -print | sort
+
+      # ---------------------------------------------------------------
+      # Push the independent frontend branch.
+      # ---------------------------------------------------------------
+      - name: Push frontend branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          branch="$BRANCH"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+          git fetch origin "$branch" --depth 1 2>/dev/null || true
+
+          parent="$(git rev-parse -q --verify "refs/remotes/origin/$branch" || true)"
+
+          index="$RUNNER_TEMP/frontend-index-$branch"
+          rm -f "$index"
+
+          (
+            cd ".github/out/$branch"
+
+            export GIT_DIR="$GITHUB_WORKSPACE/.git"
+            export GIT_WORK_TREE=.
+            export GIT_INDEX_FILE="$index"
+
+            git add -A
+          )
+
+          tree="$(GIT_INDEX_FILE="$index" git write-tree)"
+
+          if [ -n "$parent" ] &&
+             [ "$(git rev-parse "$parent^{tree}")" = "$tree" ]; then
+            echo "$branch: no changes"
+            exit 0
+          fi
+
+          if [ -n "$parent" ]; then
+            commit="$(
+              git commit-tree \
+                "$tree" \
+                -p "$parent" \
+                -p "$GITHUB_SHA" \
+                -m "build: $branch from $GITHUB_SHA"
+            )"
+          else
+            commit="$(
+              git commit-tree \
+                "$tree" \
+                -p "$GITHUB_SHA" \
+                -m "build: $branch from $GITHUB_SHA"
+            )"
+          fi
+
+          git push origin "$commit:refs/heads/$branch"
+
+          echo "$branch: pushed $commit"
