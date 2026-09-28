@@ -38,6 +38,7 @@ jobs:
       #   TECH_NAMESPACE = sct_au5
       #   SAP_NAMESPACE  = /sct/au5
       #   GIT_NAMESPACE  = #sct#au5
+      #   CLEAN_NAMESPACE = sctau5
       #   BRANCH         = rename_sct_au5
       # ---------------------------------------------------------------
       - name: Derive namespace and branch name
@@ -104,9 +105,13 @@ jobs:
             #
             # Git filename:
             #   #sct#au5
+            #
+            # Clean name (for strings/comments):
+            #   sctau5
             tech_namespace="${first_lower}_${second_lower}"
             sap_namespace="/${first_lower}/${second_lower}"
             git_namespace="#${first_lower}#${second_lower}"
+            clean_namespace="${first_lower}${second_lower}"
             branch_name="rename_${first_lower}_${second_lower}"
 
             # The underscore belongs to the replacement prefix because
@@ -129,9 +134,13 @@ jobs:
             #
             # Git filename:
             #   #sct#IF_APP
+            #
+            # Clean name (for strings/comments):
+            #   sct
             tech_namespace="${first_lower}"
             sap_namespace="/${first_lower}/"
             git_namespace="#${first_lower}"
+            clean_namespace="${first_lower}"
             branch_name="rename_${first_lower}"
 
             # For a namespace without a second component, the slash at
@@ -160,6 +169,7 @@ jobs:
           echo "TECH_NAMESPACE=$tech_namespace" >> "$GITHUB_ENV"
           echo "SAP_NAMESPACE=$sap_namespace" >> "$GITHUB_ENV"
           echo "GIT_NAMESPACE=$git_namespace" >> "$GITHUB_ENV"
+          echo "CLEAN_NAMESPACE=$clean_namespace" >> "$GITHUB_ENV"
           echo "TECH_PREFIX=$tech_prefix" >> "$GITHUB_ENV"
           echo "SAP_PREFIX=$sap_prefix" >> "$GITHUB_ENV"
           echo "GIT_PREFIX=$git_prefix" >> "$GITHUB_ENV"
@@ -169,6 +179,7 @@ jobs:
           echo "Technical namespace:   $tech_namespace"
           echo "ABAP code namespace:   $sap_namespace"
           echo "Git filename namespace: $git_namespace"
+          echo "Clean namespace:       $clean_namespace"
           echo "Branch:                $branch_name"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -292,6 +303,72 @@ jobs:
 
               if new_name != old_name:
                   path.rename(path.with_name(new_name))
+          PY
+
+      # ---------------------------------------------------------------
+      # Replace remaining z2ui5 occurrences in strings and comments.
+      #
+      # After abaplint rename, there might still be z2ui5 references in:
+      #   - Comments
+      #   - String literals
+      #   - Documentation
+      #   - Configuration values
+      #
+      # These are replaced with the clean namespace (without #, /, _).
+      #
+      # Examples:
+      #   "z2ui5" -> "sctau5"
+      #   'z2ui5_' -> 'sctau5_'
+      #   Z2UI5 -> SCTAU5
+      # ---------------------------------------------------------------
+      - name: Replace remaining z2ui5 in strings and comments
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export CLEAN_NAMESPACE
+
+          python3 <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          clean_namespace = os.environ["CLEAN_NAMESPACE"]
+
+          output = Path(".github/abaplint/output")
+
+          replacements = [
+              ("z2ui5", clean_namespace),
+              ("Z2UI5", clean_namespace.upper()),
+          ]
+
+          for path in output.rglob("*"):
+              if not path.is_file():
+                  continue
+
+              try:
+                  data = path.read_bytes()
+              except OSError:
+                  continue
+
+              # Skip binary files.
+              if b"\x00" in data:
+                  continue
+
+              try:
+                  text = data.decode("utf-8")
+              except UnicodeDecodeError:
+                  continue
+
+              original_text = text
+
+              # Replace all remaining z2ui5 occurrences.
+              for old, new in replacements:
+                  text = text.replace(old, new)
+
+              # Only write if there were changes.
+              if text != original_text:
+                  path.write_text(text, encoding="utf-8")
           PY
 
       # ---------------------------------------------------------------
