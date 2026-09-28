@@ -334,7 +334,6 @@ jobs:
           from pathlib import Path
 
           clean_namespace = os.environ["CLEAN_NAMESPACE"]
-
           output = Path(".github/abaplint/output")
 
           replacements = [
@@ -342,7 +341,9 @@ jobs:
               ("Z2UI5", clean_namespace.upper()),
           ]
 
-          for path in output.rglob("*"):
+          leftover = []
+
+          for path in sorted(output.rglob("*"), key=lambda item: len(item.parts), reverse=True):
               if not path.is_file():
                   continue
 
@@ -351,7 +352,6 @@ jobs:
               except OSError:
                   continue
 
-              # Skip binary files.
               if b"\x00" in data:
                   continue
 
@@ -362,13 +362,24 @@ jobs:
 
               original_text = text
 
-              # Replace all remaining z2ui5 occurrences.
               for old, new in replacements:
                   text = text.replace(old, new)
 
-              # Only write if there were changes.
               if text != original_text:
                   path.write_text(text, encoding="utf-8")
+
+              matches = len(re.findall(r"(?i)z2ui5", text))
+              if matches:
+                  leftover.append((str(path), matches))
+
+          if leftover:
+              print("::warning::Found remaining z2ui5 references after cleanup. Continuing anyway.")
+              for file_path, count in leftover[:20]:
+                  print(f"::warning::  {file_path}: {count} matching occurrence(s)")
+              if len(leftover) > 20:
+                  print(f"::warning::  ... and {len(leftover) - 20} more file(s)")
+          else:
+              print("::notice::No z2ui5 references remain after cleanup.")
           PY
 
       # ---------------------------------------------------------------
