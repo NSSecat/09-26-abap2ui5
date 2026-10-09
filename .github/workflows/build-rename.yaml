@@ -314,12 +314,19 @@ jobs:
       #   - Documentation
       #   - Configuration values
       #
-      # These are replaced with the clean namespace (without #, /, _).
+      # Special handling for ABAP objects:
+      #   - Z2UI5_IF_* (interfaces) -> /SAP/NAMESPACE/_IF_*
+      #   - Z2UI5_CL_* (classes) -> /SAP/NAMESPACE/_CL_*
+      #
+      # Other occurrences (comments, strings) are replaced with
+      # the clean namespace (without #, /, _).
       #
       # Examples:
       #   "z2ui5" -> "sctau5"
       #   'z2ui5_' -> 'sctau5_'
       #   Z2UI5 -> SCTAU5
+      #   Z2UI5_IF_APP -> /SCT/AU5_IF_APP
+      #   Z2UI5_CL_MODEL -> /SCT/AU5_CL_MODEL
       # ---------------------------------------------------------------
       - name: Replace remaining z2ui5 in strings and comments
         shell: bash
@@ -327,6 +334,7 @@ jobs:
           set -euo pipefail
 
           export CLEAN_NAMESPACE
+          export SAP_NAMESPACE
 
           python3 <<'PY'
           import os
@@ -334,12 +342,8 @@ jobs:
           from pathlib import Path
 
           clean_namespace = os.environ["CLEAN_NAMESPACE"]
+          sap_namespace = os.environ["SAP_NAMESPACE"]
           output = Path(".github/abaplint/output")
-
-          replacements = [
-              ("z2ui5", clean_namespace),
-              ("Z2UI5", clean_namespace.upper()),
-          ]
 
           leftover = []
 
@@ -362,8 +366,30 @@ jobs:
 
               original_text = text
 
-              for old, new in replacements:
-                  text = text.replace(old, new)
+              # Handle Z2UI5_IF_* (interfaces) - case insensitive
+              # Z2UI5_IF_APP -> /SCT/AU5_IF_APP
+              # z2ui5_if_app -> /sct/au5_if_app
+              text = re.sub(
+                  r'Z2UI5(_IF_)',
+                  sap_namespace.rstrip('/') + r'\1',
+                  text,
+                  flags=re.IGNORECASE
+              )
+
+              # Handle Z2UI5_CL_* (classes) - case insensitive
+              # Z2UI5_CL_MODEL -> /SCT/AU5_CL_MODEL
+              # z2ui5_cl_model -> /sct/au5_cl_model
+              text = re.sub(
+                  r'Z2UI5(_CL_)',
+                  sap_namespace.rstrip('/') + r'\1',
+                  text,
+                  flags=re.IGNORECASE
+              )
+
+              # Replace remaining z2ui5 in comments and string literals
+              # with the clean namespace (no slashes, no underscores)
+              text = text.replace("z2ui5", clean_namespace)
+              text = text.replace("Z2UI5", clean_namespace.upper())
 
               if text != original_text:
                   path.write_text(text, encoding="utf-8")
