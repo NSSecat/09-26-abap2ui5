@@ -314,9 +314,11 @@ jobs:
       #   - Documentation
       #   - Configuration values
       #
-      # Special handling for ABAP objects:
-      #   - Z2UI5_IF_* (interfaces) -> /SAP/NAMESPACE/_IF_*
-      #   - Z2UI5_CL_* (classes) -> /SAP/NAMESPACE/_CL_*
+      # Special handling for ABAP objects (case-sensitive):
+      #   - Z2UI5_IF_* (uppercase) -> /SAP/NAMESPACE/_IF_*
+      #   - z2ui5_if_* (lowercase) -> /sap/namespace/_if_*
+      #   - Z2UI5_CL_* (uppercase) -> /SAP/NAMESPACE/_CL_*
+      #   - z2ui5_cl_* (lowercase) -> /sap/namespace/_cl_*
       #
       # Other occurrences (comments, strings) are replaced with
       # the clean namespace (without #, /, _).
@@ -326,7 +328,9 @@ jobs:
       #   'z2ui5_' -> 'sctau5_'
       #   Z2UI5 -> SCTAU5
       #   Z2UI5_IF_APP -> /SCT/AU5_IF_APP
+      #   z2ui5_if_app -> /sct/au5_if_app
       #   Z2UI5_CL_MODEL -> /SCT/AU5_CL_MODEL
+      #   z2ui5_cl_model -> /sct/au5_cl_model
       # ---------------------------------------------------------------
       - name: Replace remaining z2ui5 in strings and comments
         shell: bash
@@ -343,6 +347,9 @@ jobs:
 
           clean_namespace = os.environ["CLEAN_NAMESPACE"]
           sap_namespace = os.environ["SAP_NAMESPACE"]
+          sap_namespace_upper = sap_namespace.upper()
+          sap_namespace_lower = sap_namespace.lower()
+          
           output = Path(".github/abaplint/output")
 
           leftover = []
@@ -366,30 +373,41 @@ jobs:
 
               original_text = text
 
-              # Handle Z2UI5_IF_* (interfaces) - case insensitive
+              # Handle Z2UI5_IF_* (uppercase interfaces)
               # Z2UI5_IF_APP -> /SCT/AU5_IF_APP
+              text = text.replace(
+                  "Z2UI5_IF_",
+                  sap_namespace_upper.rstrip('/') + "_IF_"
+              )
+
+              # Handle z2ui5_if_* (lowercase interfaces)
               # z2ui5_if_app -> /sct/au5_if_app
-              text = re.sub(
-                  r'Z2UI5(_IF_)',
-                  sap_namespace.rstrip('/') + r'\1',
-                  text,
-                  flags=re.IGNORECASE
+              text = text.replace(
+                  "z2ui5_if_",
+                  sap_namespace_lower.rstrip('/') + "_if_"
               )
 
-              # Handle Z2UI5_CL_* (classes) - case insensitive
+              # Handle Z2UI5_CL_* (uppercase classes)
               # Z2UI5_CL_MODEL -> /SCT/AU5_CL_MODEL
-              # z2ui5_cl_model -> /sct/au5_cl_model
-              text = re.sub(
-                  r'Z2UI5(_CL_)',
-                  sap_namespace.rstrip('/') + r'\1',
-                  text,
-                  flags=re.IGNORECASE
+              text = text.replace(
+                  "Z2UI5_CL_",
+                  sap_namespace_upper.rstrip('/') + "_CL_"
               )
 
-              # Replace remaining z2ui5 in comments and string literals
-              # with the clean namespace (no slashes, no underscores)
-              text = text.replace("z2ui5", clean_namespace)
+              # Handle z2ui5_cl_* (lowercase classes)
+              # z2ui5_cl_model -> /sct/au5_cl_model
+              text = text.replace(
+                  "z2ui5_cl_",
+                  sap_namespace_lower.rstrip('/') + "_cl_"
+              )
+
+              # Replace remaining uppercase z2ui5 in comments and string literals
+              # with the uppercase clean namespace
               text = text.replace("Z2UI5", clean_namespace.upper())
+
+              # Replace remaining lowercase z2ui5 in comments and string literals
+              # with the lowercase clean namespace
+              text = text.replace("z2ui5", clean_namespace.lower())
 
               if text != original_text:
                   path.write_text(text, encoding="utf-8")
